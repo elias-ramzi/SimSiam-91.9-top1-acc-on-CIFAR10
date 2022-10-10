@@ -13,15 +13,23 @@ class KNNValidation(object):
         self.args = args
         self.K = K
 
+        if args.dataset == 'cifar10':
+            mean = [0.4914, 0.4822, 0.4465]
+            std = [0.2470, 0.2435, 0.2616]
+        else:
+            mean = [0.5071, 0.4867, 0.4408]
+            std = [0.2675, 0.2565, 0.2761]
+
         base_transforms = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize(mean=mean, std=std),
         ])
 
-        train_dataset = datasets.CIFAR10(root=args.data_root,
-                                         train=True,
-                                         download=True,
-                                         transform=base_transforms)
+        train_dataset = (datasets.CIFAR10 if args.dataset == 'cifar10' else datasets.CIFAR100)(
+            root=args.data_root,
+            train=True,
+            download=True,
+            transform=base_transforms)
 
         self.train_dataloader = DataLoader(train_dataset,
                                            batch_size=args.batch_size,
@@ -30,10 +38,11 @@ class KNNValidation(object):
                                            pin_memory=True,
                                            drop_last=True)
 
-        val_dataset = datasets.CIFAR10(root=args.data_root,
-                                       train=False,
-                                       download=True,
-                                       transform=base_transforms)
+        val_dataset = (datasets.CIFAR10 if args.dataset == 'cifar10' else datasets.CIFAR100)(
+            root=args.data_root,
+            train=False,
+            download=True,
+            transform=base_transforms)
 
         self.val_dataloader = DataLoader(val_dataset,
                                          batch_size=args.batch_size,
@@ -45,13 +54,13 @@ class KNNValidation(object):
     def _topk_retrieval(self):
         """Extract features from validation split and search on train split features."""
         n_data = self.train_dataloader.dataset.data.shape[0]
-        feat_dim = self.args.feat_dim
+        # feat_dim = self.args.feat_dim
 
         self.model.eval()
         if str(self.device) == 'cuda':
             torch.cuda.empty_cache()
 
-        train_features = torch.zeros([feat_dim, n_data], device=self.device)
+        train_features = torch.zeros([256, n_data], device=self.device)
         with torch.no_grad():
             for batch_idx, (inputs, _) in enumerate(self.train_dataloader):
                 inputs = inputs.to(self.device)
@@ -70,7 +79,7 @@ class KNNValidation(object):
             for batch_idx, (inputs, targets) in enumerate(self.val_dataloader):
                 targets = targets.cuda(non_blocking=True)
                 batch_size = inputs.size(0)
-                features = self.model(inputs.to(self.device))
+                features = nn.functional.normalize(self.model(inputs.to(self.device)))
 
                 dist = torch.mm(features, train_features)
                 yd, yi = dist.topk(self.K, dim=1, largest=True, sorted=True)
@@ -87,5 +96,3 @@ class KNNValidation(object):
 
     def eval(self):
         return self._topk_retrieval()
-
-

@@ -1,13 +1,14 @@
 import argparse
 import time
 import math
+import builtins
+import os
 from os import path, makedirs
 
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.backends import cudnn
 from torchvision import datasets
 from torchvision import transforms
 
@@ -19,8 +20,11 @@ from simsiam.validation import KNNValidation
 parser = argparse.ArgumentParser('arguments for training')
 parser.add_argument('--data_root', type=str, help='path to dataset directory')
 parser.add_argument('--exp_dir', type=str, help='path to experiment directory')
+parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100'])
 parser.add_argument('--trial', type=str, default='1', help='trial id')
 parser.add_argument('--img_dim', default=32, type=int)
+
+parser.add_argument('--distributed', default=False, action='store_true')
 
 parser.add_argument('--arch', default='resnet18', help='model name is used for training')
 
@@ -34,7 +38,7 @@ parser.add_argument('--loss_version', default='simplified', type=str,
                     choices=['simplified', 'original'],
                     help='do the same thing but simplified version is much faster. ()')
 parser.add_argument('--print_freq', default=10, type=int, help='print frequency')
-parser.add_argument('--eval_freq', default=5, type=int, help='evaluate model frequency')
+parser.add_argument('--eval_freq', default=10, type=int, help='evaluate model frequency')
 parser.add_argument('--save_freq', default=50, type=int, help='save model frequency')
 parser.add_argument('--resume', default=None, type=str, help='path to latest checkpoint')
 
@@ -46,12 +50,37 @@ args = parser.parse_args()
 
 
 def main():
+    if args.distributed:
+        torch.distributed.init_process_group(backend='nccl')
+        world_size = int(os.environ['WORLD_SIZE'])
+        rank = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        is_master = rank == 0
+        if is_master:
+
+            def print_pass(*args, **kwargs):
+                pass
+            builtins.print = print_pass
+    else:
+        world_size = 1
+        rank = 0
+        local_rank = 0
+        is_master = True
+    torch.cuda.set_device(local_rank)
+
     if not path.exists(args.exp_dir):
         makedirs(args.exp_dir)
 
     trial_dir = path.join(args.exp_dir, args.trial)
     logger = SummaryWriter(trial_dir)
     print(vars(args))
+
+    if args.dataset == 'cifar10':
+        mean = [0.4914, 0.4822, 0.4465]
+        std = [0.2470, 0.2435, 0.2616]
+    else:
+        mean = [0.5071, 0.4867, 0.4408]
+        std = [0.2675, 0.2565, 0.2761]
 
     train_transforms = transforms.Compose([
         transforms.RandomResizedCrop(args.img_dim, scale=(0.2, 1.)),
@@ -61,35 +90,40 @@ def main():
         ], p=0.8),
         transforms.RandomGrayscale(p=0.2),
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        transforms.Normalize(mean=mean, std=std)
     ])
 
-    train_set = datasets.CIFAR10(root=args.data_root,
-                                 train=True,
-                                 download=True,
-                                 transform=TwoCropsTransform(train_transforms))
+    train_set = (datasets.CIFAR10 if args.dataset == 'cifar10' else datasets.CIFAR100)(
+        root=args.data_root,
+        train=True,
+        download=True,
+        transform=TwoCropsTransform(train_transforms),
+    )
 
-    train_loader = DataLoader(dataset=train_set,
-                              batch_size=args.batch_size,
-                              shuffle=True,
-                              num_workers=args.num_workers,
-                              pin_memory=True,
-                              drop_last=True)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_set) if args.distributed else None
+    train_loader = DataLoader(
+        dataset=train_set,
+        batch_size=int(args.batch_size / world_size),
+        shuffle=not args.distributed,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+        persistent_workers=True,
+        sampler=train_sampler,
+    )
 
     model = SimSiam(args)
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if args.distributed else model
+    model.to('cuda', non_blocking=True)
 
+    args.learning_rate = args.learning_rate * args.batch_size / 256
     optimizer = optim.SGD(model.parameters(),
                           lr=args.learning_rate,
                           momentum=args.momentum,
                           weight_decay=args.weight_decay)
 
-    criterion = SimSiamLoss(args.loss_version)
-
-    if args.gpu is not None:
-        torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
-        criterion = criterion.cuda(args.gpu)
-        cudnn.benchmark = True
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank) if args.distributed else model
+    criterion = SimSiamLoss()
 
     start_epoch = 1
     if args.resume is not None:
@@ -102,8 +136,10 @@ def main():
 
     # routine
     best_acc = 0.0
-    validation = KNNValidation(args, model.encoder)
+    validation = KNNValidation(args, model.module.online_encoder if args.distributed else model.online_encoder)
     for epoch in range(start_epoch, args.epochs+1):
+        if args.distributed:
+            train_sampler.set_epoch(epoch)
 
         adjust_learning_rate(optimizer, epoch, args)
         print("Training...")
@@ -112,7 +148,7 @@ def main():
         train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
         logger.add_scalar('Loss/train', train_loss, epoch)
 
-        if epoch % args.eval_freq == 0:
+        if (epoch % args.eval_freq == 0) and is_master:
             print("Validating...")
             val_top1_acc = validation.eval()
             print('Top1: {}'.format(val_top1_acc))
@@ -127,7 +163,7 @@ def main():
             logger.add_scalar('Acc/val_top1', val_top1_acc, epoch)
 
         # save the model
-        if epoch % args.save_freq == 0:
+        if (epoch % args.save_freq == 0) and is_master:
             save_checkpoint(epoch, model, optimizer, val_top1_acc,
                             path.join(trial_dir, 'ckpt_epoch_{}_{}.pth'.format(epoch, args.trial)),
                             'Saving...')
@@ -135,9 +171,10 @@ def main():
     print('Best accuracy:', best_acc)
 
     # save model
-    save_checkpoint(epoch, model, optimizer, val_top1_acc,
-                    path.join(trial_dir, '{}_last.pth'.format(args.trial)),
-                    'Saving the model at the last epoch.')
+    if is_master:
+        save_checkpoint(epoch, model, optimizer, val_top1_acc,
+                        path.join(trial_dir, '{}_last.pth'.format(args.trial)),
+                        'Saving the model at the last epoch.')
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -152,14 +189,16 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     model.train()
 
     end = time.time()
+    step = (epoch - 1) * len(train_loader)
     for i, (images, _) in enumerate(train_loader):
 
-        if args.gpu is not None:
-            images[0] = images[0].cuda(args.gpu, non_blocking=True)
-            images[1] = images[1].cuda(args.gpu, non_blocking=True)
+        images[0] = images[0].cuda('cuda', non_blocking=True)
+        images[1] = images[1].cuda('cuda', non_blocking=True)
 
         # compute output
-        outs = model(im_aug1=images[0], im_aug2=images[1])
+        mm = adjust_mm(0.996, step, args.epochs * len(train_loader))
+        step += 1
+        outs = model(im_aug1=images[0], im_aug2=images[1], mm=mm)
         loss = criterion(outs['z1'], outs['z2'], outs['p1'], outs['p2'])
 
         # compute gradient and do SGD step
@@ -186,6 +225,10 @@ def adjust_learning_rate(optimizer, epoch, args):
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+
+def adjust_mm(init_mm: float, step: int, max_step: int) -> float:
+    return 1 - (1 - init_mm) * (math.cos(math.pi*step/max_step)+1)/2
 
 
 class AverageMeter(object):
@@ -256,6 +299,3 @@ def load_checkpoint(model, optimizer, filename):
 
 if __name__ == '__main__':
     main()
-
-
-

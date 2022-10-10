@@ -103,24 +103,28 @@ class ResNet(nn.Module):
 
 
 def ResNet18(low_dim=128):
-    return ResNet(BasicBlock, [2,2,2,2], low_dim)
+    return ResNet(BasicBlock, [2, 2, 2, 2], low_dim)
+
 
 def ResNet34(low_dim=128):
-    return ResNet(BasicBlock, [3,4,6,3], low_dim)
+    return ResNet(BasicBlock, [3, 4, 6, 3], low_dim)
+
 
 def ResNet50(low_dim=128):
-    return ResNet(Bottleneck, [3,4,6,3], low_dim)
+    return ResNet(Bottleneck, [3, 4, 6, 3], low_dim)
+
 
 def ResNet101(low_dim=128):
-    return ResNet(Bottleneck, [3,4,23,3], low_dim)
+    return ResNet(Bottleneck, [3, 4, 23, 3], low_dim)
+
 
 def ResNet152(low_dim=128):
-    return ResNet(Bottleneck, [3,8,36,3], low_dim)
+    return ResNet(Bottleneck, [3, 8, 36, 3], low_dim)
 
 
 def test():
     net = ResNet18()
-    y = net(Variable(torch.randn(1,3,32,32)))
+    y = net(Variable(torch.randn(1, 3, 32, 32)))
     print(y.size())
 
 # test()

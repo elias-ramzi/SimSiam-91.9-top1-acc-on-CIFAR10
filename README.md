@@ -25,3 +25,31 @@ Linear classification results on CIFAR10 using this repo with one GPU:
 | Model | Pre-train<br/>epochs | Top-1 acc.<br/>(paper) | Top-1 acc.<br/>(ours)| Pre-train<br/>weights |
 | :---: | :---: | :---: | :---:| :---: |
 |ResNet-18| 800 | 91.8 | 91.94 | [download](https://drive.google.com/file/d/17_0uXiTbeUsRhwI0TDgGnj45eLWmXO2c/view?usp=sharing) |
+
+
+
+```
+python -m torch.distributed.run --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=12345 \
+main.py \
+--data_root /local/DEEPLEARNING/image_retrieval/ \
+--exp_dir experiments/ \
+--distributed
+```
+
+```
+python -m torch.distributed.run --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=12345 \
+main.py \
+--data_root /local/DEEPLEARNING/image_retrieval/ \
+--exp_dir experiments/resnet34 \
+--distributed \
+--arch resnet34
+```
+
+```
+python -m torch.distributed.run --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=12345 \
+main.py \
+--data_root /local/SSD_DEEPLEARNING_1/image_retrieval/ \
+--exp_dir ood_experiments/resnet50 \
+--distributed \
+--arch resnet50
+```
