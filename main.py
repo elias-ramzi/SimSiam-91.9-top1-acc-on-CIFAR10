@@ -1,9 +1,10 @@
+import os
+from os import path, makedirs
 import argparse
 import time
 import math
 import builtins
-import os
-from os import path, makedirs
+import subprocess
 
 import torch
 from torch import optim
@@ -24,6 +25,7 @@ parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10'
 parser.add_argument('--trial', type=str, default='1', help='trial id')
 parser.add_argument('--img_dim', default=32, type=int)
 
+parser.add_argument('--is_cluster', default=False, action='store_true')
 parser.add_argument('--distributed', default=False, action='store_true')
 
 parser.add_argument('--arch', default='resnet18', help='model name is used for training')
@@ -50,6 +52,22 @@ args = parser.parse_args()
 
 
 def main():
+    if args.is_cluster and args.distributed:
+        # local rank on the current node / global rank
+        local_rank = int(os.environ['SLURM_LOCALID'])
+        global_rank = int(os.environ['SLURM_PROCID'])
+        # number of processes / GPUs per node
+        world_size = int(os.environ['SLURM_NTASKS'])
+        # define master address and master port
+        hostnames = subprocess.check_output(['scontrol', 'show', 'hostnames', os.environ['SLURM_JOB_NODELIST']])
+        master_addr = hostnames.split()[0].decode('utf-8')
+        # set environment variables for 'env://'
+        os.environ['MASTER_ADDR'] = master_addr
+        os.environ['MASTER_PORT'] = str(29500)
+        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['RANK'] = str(global_rank)
+        os.environ['LOCAL_RANK'] = str(local_rank)
+
     if args.distributed:
         torch.distributed.init_process_group(backend='nccl')
         world_size = int(os.environ['WORLD_SIZE'])
@@ -96,7 +114,7 @@ def main():
     train_set = (datasets.CIFAR10 if args.dataset == 'cifar10' else datasets.CIFAR100)(
         root=args.data_root,
         train=True,
-        download=True,
+        download=not args.is_cluster,
         transform=TwoCropsTransform(train_transforms),
     )
 

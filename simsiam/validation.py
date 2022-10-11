@@ -28,7 +28,7 @@ class KNNValidation(object):
         train_dataset = (datasets.CIFAR10 if args.dataset == 'cifar10' else datasets.CIFAR100)(
             root=args.data_root,
             train=True,
-            download=True,
+            download=not args.is_cluster,
             transform=base_transforms)
 
         self.train_dataloader = DataLoader(train_dataset,
@@ -41,7 +41,7 @@ class KNNValidation(object):
         val_dataset = (datasets.CIFAR10 if args.dataset == 'cifar10' else datasets.CIFAR100)(
             root=args.data_root,
             train=False,
-            download=True,
+            download=not args.is_cluster,
             transform=base_transforms)
 
         self.val_dataloader = DataLoader(val_dataset,
