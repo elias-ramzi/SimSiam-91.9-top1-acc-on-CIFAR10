@@ -86,11 +86,13 @@ def main():
         is_master = True
     torch.cuda.set_device(local_rank)
 
-    if not path.exists(args.exp_dir):
-        makedirs(args.exp_dir)
+    if is_master:
+        if not path.exists(args.exp_dir):
+            makedirs(args.exp_dir)
 
     trial_dir = path.join(args.exp_dir, args.trial)
-    logger = SummaryWriter(trial_dir)
+    if is_master:
+        logger = SummaryWriter(trial_dir)
     print(vars(args))
 
     if args.dataset == 'cifar10':
@@ -164,7 +166,8 @@ def main():
 
         # train for one epoch
         train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
-        logger.add_scalar('Loss/train', train_loss, epoch)
+        if is_master:
+            logger.add_scalar('Loss/train', train_loss, epoch)
 
         if (epoch % args.eval_freq == 0) and is_master:
             print("Validating...")

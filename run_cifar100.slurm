@@ -11,7 +11,7 @@
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --output=logs/%A_%a.out # output file name
 #SBATCH --error=logs/%A_%a.err  # error file name
-#SBATCH --array=0-2
+#SBATCH --array=0
 
 set -x
 cd $WORK/SimSiam-91.9-top1-acc-on-CIFAR10
