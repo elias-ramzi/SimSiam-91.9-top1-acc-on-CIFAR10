@@ -28,6 +28,8 @@ arch[0]=resnet18
 arch[1]=resnet34
 arch[2]=resnet50
 
+lr[0]=1.0
+
 
 srun python main.py \
 --data_root $SCRATCH \
